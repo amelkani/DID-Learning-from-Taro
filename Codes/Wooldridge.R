@@ -31,7 +31,7 @@ knitr::opts_chunk$set(
 
 
 #/*=================================================*/
-#' # 
+#' # Packages
 #/*=================================================*/
 library(data.table)
 library(magrittr)
@@ -108,7 +108,7 @@ twfe_estimates <- tidy(twfe) %>%
 )
 
 #/*=================================================*/
-#' # Corollary 5.1
+#' # Section 5.1 (Homogeneous Time Effects): Corollary 5.1
 #/*=================================================*/
 set.seed(389435)
 
@@ -118,7 +118,7 @@ set.seed(389435)
 N <- 1000
 T <- 30
 
-reg_data <- 
+reg_data_5.1 <- 
   CJ(id = 1:N, t = 1:T) %>% 
   #=== individual FE ===#
   .[, ind_fe := rnorm(1), by = id] %>% 
@@ -134,17 +134,15 @@ reg_data <-
   .[, treated_i_dot := mean(treated), by = id] %>% 
   #=== cross-sectional average by time ===#
   .[, treated_dot_t := mean(treated), by = t] %>% 
-  #=== other covariates (time-constant) ===#
-  .[, `:=`(x_i1 = rnorm(1), x_i2 = rnorm(1)), by = id] %>% 
   #=== error ===#
   .[, mu := rnorm(1), by = .(id, t)] %>% 
   #=== dependent var ===#
-  .[, y := 1 + treated + treated * x_i1 + treated * x_i2 + p * x_i1 + p * x_i2 + mu] 
+  .[, y := 1 + treated + mu]
 
 #/*----------------------------------*/
 #' ## DD
 #/*----------------------------------*/
-dd <- feols(y ~ treated + d + p, data = reg_data)
+dd <- feols(y ~ treated + d + p, data = reg_data_5.1)
 
 (
 dd_estimates <- tidy(dd) %>% 
@@ -155,7 +153,7 @@ dd_estimates <- tidy(dd) %>%
 #/*----------------------------------*/
 #' ## TWFE
 #/*----------------------------------*/
-twfe <- feols(y ~ treated | id + t, data = reg_data)
+twfe <- feols(y ~ treated | id + t, data = reg_data_5.1)
 
 (
 twfe_estimates <- tidy(twfe) %>% 
@@ -166,7 +164,7 @@ twfe_estimates <- tidy(twfe) %>%
 #/*----------------------------------*/
 #' ## TWM
 #/*----------------------------------*/
-twm <- feols(y ~ treated + treated_i_dot + treated_dot_t, data = reg_data)
+twm <- feols(y ~ treated + treated_i_dot + treated_dot_t, data = reg_data_5.1)
 
 (
 twm_estimates <- tidy(twm) %>% 
@@ -182,11 +180,11 @@ twm_estimates <- tidy(twm) %>%
 #' coefficient on `treated`. The multipliers are 0.5 because half
 #' of the units and half of the periods are treated.
 
-identical(reg_data[, treated_i_dot], reg_data[, 0.5 * d])
-identical(reg_data[, treated_dot_t], reg_data[, 0.5 * p])
+identical(reg_data_5.1[, treated_i_dot], reg_data_5.1[, 0.5 * d])
+identical(reg_data_5.1[, treated_dot_t], reg_data_5.1[, 0.5 * p])
 
 #/*=================================================*/
-#' # Section: 5.1 (Homogeneous Time Effects)
+#' # Equation (5.6): treatment effect vary by x_i (time-constant covariate)
 #/*=================================================*/
 #' Treatment effect varies based on time-constant 
 #' variables $X_i$ ($x_i1$ and $x_i2$) captured by $w * X_i$, and the impact of $X_i$
@@ -194,6 +192,22 @@ identical(reg_data[, treated_dot_t], reg_data[, 0.5 * p])
 #' In practice, you want to calculate $\bar{X}$ and use $X_i - \bar{X}$
 #' in place of $X_i$ to interact with $w$. Adjustment in 
 #' s.e calculation necessary.
+
+reg_data_5.1_5.6 <-
+  copy(reg_data_5.1) %>% 
+  #=== other covariates (time-constant) ===#
+  #' E[X_i1] = 0, E[X_i2] = 0
+  .[, `:=`(x_i1 = runif(1), x_i2 = runif(1)), by = id] %>% 
+  #=== dependent var ===#
+  .[, y := 
+    1 + 
+    treated # beta = 1
+    + treated * x_i1 + treated * x_i2 # gamma_1 = gamma_2 = 1
+    + x_i1 + x_i2 # varepsilon_1 = varepsilon_2 = 1
+    + p # theta = 1
+    + p * x_i1 + p * x_i2 # sigma_1 = sigma_2 = 1 
+    + mu
+  ]
 
 #/*----------------------------------*/
 #' ## TWFE
@@ -207,13 +221,13 @@ twfe <-
     #=== (new) ===#
     + I(p * x_i1) + I(p * x_i2)
     | id + t, 
-    data = reg_data
+    data = reg_data_5.1_5.6
   )
 
 (
 twfe_estimates <- tidy(twfe) %>% 
   data.table() %>% 
-  .[term == "treated", .(term, estimate)]
+  .[grep("treated", term), .(term, estimate)]
 )
 
 #/*----------------------------------*/
@@ -227,32 +241,32 @@ twm <-
     + x_i1 + x_i2 + 
     + d + I(d * x_i1) + I(d * x_i2) 
     + p + I(p * x_i1) + I(p * x_i2),
-    data = reg_data
+    data = reg_data_5.1_5.6
   )
 
 (
 twm_estimates <- tidy(twm) %>% 
   data.table() %>% 
-  .[term == "treated", .(term, estimate)]
+  .[grep("treated", term), .(term, estimate)]
 )
 
 #/*----------------------------------*/
 #' ## DID (5.9)
 #/*----------------------------------*/
 y_dif_data <- 
-  reg_data[, .(mean_y = mean(y)), by = .(id, p)] %>% 
+  reg_data_5.1_5.6[, .(mean_y = mean(y)), by = .(id, p)] %>% 
   dcast(id ~ paste0("treate_", p), value.var = "mean_y") %>% 
   .[, y_dif := treate_1 - treate_0] %>% 
   .[, .(id, y_dif)]
 
-dd_data <- reg_data[, .(id, d, x_i1, x_i2)][y_dif_data, on = "id"]
+dd_data <- reg_data_5.1_5.6[, .(id, d, x_i1, x_i2)][y_dif_data, on = "id"]
 
 dd <- feols(y_dif ~ d + x_i1 + x_i2 + I(d * x_i1) + I(d * x_i2), data = dd_data)
 
 (
 dd_estimates <- tidy(dd) %>% 
   data.table() %>% 
-  .[term == "d", .(term, estimate)]
+  .[grep("d", term), .(term, estimate)]
 )
 
 #/*=================================================*/
@@ -350,7 +364,307 @@ beta_did <-
   dcast(t ~ paste0("mean_y_dif_", d), value.var = "mean_y_dif") %>% 
   .[, tau := mean_y_dif_1 - mean_y_dif_0]
 
-#=== check with TWFE and TWM estimates ===#
+#/*----------------------------------*/
+#' ## Compare
+#/*----------------------------------*/ 
 cbind(beta_did[, tau], twfe_estimates[, estimate], twm_estimates[, estimate])
 
+#/*=================================================*/
+#' # 6.1: Staggered Adoption
+#/*=================================================*/
+#' Treatment effects vary by cohort (when first adopted)
+#' and time. 
+
+#/*----------------------------------*/
+#' ## Data generation
+#/*----------------------------------*/
+set.seed(247834)
+
+N <- 3000
+T <- 12
+
+# ggplot(reg_data_6.1[, .(y = mean(y)), by = .(t, cohort)]) +
+#   geom_line(aes(y = y, x = t, color = factor(cohort)))
+
+cohort_data <- 
+  data.table(
+    #=== year first treated ===#
+    cohort = c(5, 9, 13), 
+    #=== first id number for each of the cohort ===#
+    id = c(1, 1000, 2000)
+  )
+
+reg_data_6.1 <- 
+  CJ(id = 1:N, t = 1:T) %>% 
+  #=== individual FE ===#
+  .[, ind_fe := rnorm(1), by = id] %>% 
+  #=== year FE ===#
+  .[, time_fe := rnorm(1), by = t] %>% 
+  #=== when first treated (cohort) ===#
+  #' 3 groups: 
+  #' cohort = 5: id 1 through 332 (treated since t = 9)
+  #' cohort = 9: id 333 through 665 (treated since t = 9)
+  #' cohort = 13: id 666 through 1000 (never treated)
+  cohort_data[., roll = TRUE, on = "id"] %>% 
+  #=== cohort fe ===#
+  .[, cohort_fe := rnorm(1), by = cohort] %>% 
+  #=== t-cohort ===#
+  .[, t_cohort := paste0(t, "-", cohort)] %>% 
+  .[cohort > t, t_cohort := "base"] %>% 
+  #=== treated ===#
+  .[, treated := fifelse(t >= cohort, 1, 0)] %>% 
+  #=== treatment effect at t first adopted ===#
+  .[, tau_r0 := runif(1), by = cohort] %>% 
+  #=== treatment effect by t and cohort ===#
+  .[, tau_rs := tau_r0 + 0.5 * (t - cohort)] %>% 
+  #=== set the treatment effect to 0 if t < f_treated ===#
+  .[treated == 0, tau_rs := 0] %>% 
+  #=== error ===#
+  .[, mu := rnorm(1), by = .(id, t)] %>% 
+  #=== dependent variable ===#
+  .[, y 
+    := 1 # eta
+    + cohort_fe # lambda
+    + time_fe # theta
+    + tau_rs # tau_rs * (w_it * d_ir * f_st)
+    + ind_fe 
+    + mu 
+  ]
+
+#/*----------------------------------*/
+#' ## TWM
+#/*----------------------------------*/
+twm <- 
+  feols(
+    y 
+    ~ i(factor(cohort)) # cohort dummies
+    + i(factor(t)) # time dummies
+    + i(t_cohort, ref = "base"),
+    data = reg_data_6.1
+  )
+
+twm_estimates <- 
+  tidy(twm) %>% 
+  data.table() %>% 
+  .[grep("cohort::", term), ] %>% 
+  .[, cohort := parse_number(gsub(".*-", "", term))] %>% 
+  .[, t := parse_number(gsub("-.*", "", term))] %>% 
+  .[, .(cohort, t, estimate)] %>% 
+  setnames("estimate", "twm") %>% 
+  .[order(cohort, t), ]
+
+#/*----------------------------------*/
+#' ## TWFE
+#/*----------------------------------*/
+twfe <- 
+  feols(
+    y 
+    ~ treated : factor(t) : factor(cohort) 
+    | id + t, 
+    data = reg_data_6.1
+  )
+
+twfe_estimates <- 
+  tidy(twfe) %>% 
+  data.table() %>% 
+  .[, cohort := parse_number(gsub(".*cohort", "", term))] %>% 
+  .[, t := parse_number(gsub("co*", "", term))] %>% 
+  .[, .(cohort, t, estimate)] %>% 
+  setnames("estimate", "twfe")
+
+#/*----------------------------------*/
+#' ## Callaway and Sant’Anna (2021)
+#/*----------------------------------*/
+csa <- 
+  att_gt(
+    yname = "y",
+    gname = "cohort",
+    idname = "id",
+    tname = "t",
+    control_group = "notyettreated",
+    data = reg_data_6.1
+  )
+
+csa_estimates <- 
+  data.table(
+    cohort = csa$group, 
+    t = csa$t, 
+    estimate = csa$att
+  ) %>% 
+  .[cohort <= t, ] %>% 
+  setnames("estimate", "csa")
+
+#/*----------------------------------*/
+#' ## Merge and Compare
+#/*----------------------------------*/
+true_tau <- 
+  reg_data_6.1[, .(cohort, t, tau_rs)] %>% 
+  unique(by = c("cohort", "t")) %>% 
+  .[cohort <= t, ] %>% 
+  setnames("tau_rs", "true ATT")
+
+(
+all_estimates <- 
+  twfe_estimates %>% 
+  twm_estimates[., on = c("cohort", "t")] %>% 
+  csa_estimates[., on = c("cohort", "t")] %>% 
+  true_tau[., on = c("cohort", "t")]
+)
+  
+
+#/*=================================================*/
+#' # 6.3: Staggered Adoption with Covariates 
+#/*=================================================*/
+#' Treatment effects vary by cohort (when first adopted)
+#' , time, and covariates. 
+
+#/*----------------------------------*/
+#' ## Data generation
+#/*----------------------------------*/
+set.seed(78443)
+
+reg_data_6.3 <- 
+  #=== this data is defined above ===#
+  copy(reg_data_6.1) %>%  
+  #=== x (time-constant) ===#
+  .[, x := runif(1), by = id] %>% 
+  #=== cohort-demeaned x ===#
+  .[, c_dem_x := x - mean(x), by = cohort] %>% 
+  #=== cohort fe ===#
+  .[, cohort_fe := 0.1 * runif(1), by = cohort] %>% 
+  #=== coefficient on X by cohort (zeta) ===#
+  .[, zeta_c := runif(1), by = cohort] %>% 
+  #=== coefficient on X by time (pi) ===#
+  .[, pi_t := runif(1), by = t] %>% 
+  #=== coefficient on d * x at t first adopted ===#
+  .[, rho_r0 := runif(1), by = cohort] %>% 
+  #=== coefficient on d * x by t and cohort ===#
+  .[, rho_rs := rho_r0 + 0.3 * (t - cohort)] %>% 
+  #=== set the treatment effect to 0 if t < f_treated ===#
+  .[treated == 0, rho_rs := 0] %>% 
+  #=== dependent variable ===#
+  .[, y 
+    := 1 # (eta)
+    + cohort_fe # lambda 
+    + x # (kappa = 1)
+    + zeta_c * x # d_q * x* zeta_q
+    + time_fe # theta_t
+    + pi_t * x # x * pi_t
+    + tau_rs # tau_rs * d_r for r = q, .., T and for q <= s <=T 
+    + rho_rs * c_dem_x
+    + ind_fe 
+    + mu
+  ]
+
+#=== evolution of y by cohort ===#
+reg_data_6.3 %>% 
+.[, .(mean_y = mean(y)), by = .(cohort, t)] %>% 
+ggplot(.) +
+  geom_line(aes(
+    y = mean_y, 
+    x = t, 
+    color = factor(paste0("cohort-", cohort))
+  ))
+
+#=== evolution of tau and rho ===#
+reg_data_6.3 %>% 
+unique(by = c("cohort", "t")) %>% 
+.[, .(cohort, t, tau_rs, rho_rs)] %>% 
+melt(id.var = c("cohort", "t")) %>% 
+.[, type := fcase(
+  variable == "tau_rs", "tau",
+  variable == "rho_rs", "rho"
+)] %>% 
+ggplot(.) +
+geom_line(aes(
+  y = value, 
+  x = t, 
+  color = factor(paste0("cohort-", cohort))
+)) +
+facet_grid(type ~ .) +
+scale_color_discrete(name = "") +
+ylab("Coefficient") 
+
+#/*----------------------------------*/
+#' ## TWM
+#/*----------------------------------*/
+twm <- 
+  feols(
+    y 
+    ~ i(cohort) # cohort dummies: (lambda)
+    + x # (kappa)
+    + i(cohort, x) # cohort dummy * x (zeta)
+    + i(t) # time dummies (theta)
+    + i(t, x) # time dummy * x (pi)
+    + i(t_cohort, ref = "base") # (tau)
+    + i(t_cohort, c_dem_x, ref = "base"), # (rho)
+    data = reg_data_6.3
+  )
+
+(
+twm_estimates <- 
+  tidy(twm) %>% 
+  data.table() %>% 
+  .[grep("t_cohort::", term), ] %>% 
+  .[, cohort := parse_number(gsub(".*-", "", term))] %>% 
+  .[, t := parse_number(gsub("-.*", "", term))] %>% 
+  .[, type := fifelse(grepl("x", term) == TRUE, "rho", "tau")] %>% 
+  .[, .(cohort, t, type, estimate)] %>% 
+  setnames("estimate", "twm") %>% 
+  .[order(type, cohort, t), ]
+)
+
+#/*----------------------------------*/
+#' ## TWFE
+#/*----------------------------------*/
+twfe <- 
+  feols(
+    y
+    ~ i(t, x) # time dummy * x
+    + i(t_cohort, ref = "base")
+    + i(t_cohort, c_dem_x, ref = "base")
+    | id + t, 
+    data = reg_data_6.3
+  )
+
+twfe_estimates <- 
+  tidy(twfe) %>% 
+  data.table() %>% 
+  .[grep("cohort", term), ] %>% 
+  .[, cohort := parse_number(gsub(".*-", "", term))] %>% 
+  .[, t := parse_number(gsub("-.*", "", term))] %>%  
+  .[, type := fifelse(grepl("x", term) == TRUE, "rho", "tau")] %>% 
+  .[, .(cohort, t, type, estimate)] %>% 
+  setnames("estimate", "twfe") %>% 
+  .[order(type, cohort, t), ]
+
+#/*----------------------------------*/
+#' ## Merge and Compare
+#/*----------------------------------*/
+true_tau <- 
+  reg_data_6.3[, .(cohort, t, tau_rs, rho_rs)] %>% 
+  unique(by = c("cohort", "t")) %>% 
+  .[cohort <= t, ] %>% 
+  melt(id.var = c("cohort", "t")) %>% 
+  .[, type := fcase(
+    variable == "tau_rs", "tau",
+    variable == "rho_rs", "rho"
+  )] %>% 
+  setnames("value", "true_coef")
+
+
+#=== compare ===#
+(
+all_estimates <- 
+  twfe_estimates %>% 
+  twm_estimates[., on = c("cohort", "t", "type")] %>% 
+  true_tau[., on = c("cohort", "t", "type")]
+)
+
+#=== visualize ===#
+#' You get the same figure with twfe as twm and twfe are identical
+ggplot(all_estimates) +
+  geom_point(aes(y = true_coef, x = twm)) +
+  geom_abline(slope = 1, color = "red") +
+  facet_grid(type ~ .)
 
