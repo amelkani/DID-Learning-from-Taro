@@ -137,7 +137,7 @@ reg_data_5.1 <-
   #=== error ===#
   .[, mu := rnorm(1), by = .(id, t)] %>% 
   #=== dependent var ===#
-  .[, y := 1 + treated + mu]
+  .[, y := 1 + treated + mu + ind_fe + time_fe]
 
 #/*----------------------------------*/
 #' ## DD
@@ -402,9 +402,9 @@ reg_data_6.1 <-
   .[, time_fe := rnorm(1), by = t] %>% 
   #=== when first treated (cohort) ===#
   #' 3 groups: 
-  #' cohort = 5: id 1 through 332 (treated since t = 9)
-  #' cohort = 9: id 333 through 665 (treated since t = 9)
-  #' cohort = 13: id 666 through 1000 (never treated)
+  #' cohort = 5: id 1 through 999 (treated since t = 9)
+  #' cohort = 9: id 1000 through 1999 (treated since t = 9)
+  #' cohort = 13: id 2000 through 3000 (never treated)
   cohort_data[., roll = TRUE, on = "id"] %>% 
   #=== cohort fe ===#
   .[, cohort_fe := rnorm(1), by = cohort] %>% 
@@ -437,8 +437,8 @@ reg_data_6.1 <-
 twm <- 
   feols(
     y 
-    ~ i(factor(cohort)) # cohort dummies
-    + i(factor(t)) # time dummies
+    ~ i(cohort) # cohort dummies
+    + i(t) # time dummies
     + i(t_cohort, ref = "base"),
     data = reg_data_6.1
   )
@@ -459,7 +459,7 @@ twm_estimates <-
 twfe <- 
   feols(
     y 
-    ~ treated : factor(t) : factor(cohort) 
+    ~ treated : t_cohort
     | id + t, 
     data = reg_data_6.1
   )
@@ -467,8 +467,8 @@ twfe <-
 twfe_estimates <- 
   tidy(twfe) %>% 
   data.table() %>% 
-  .[, cohort := parse_number(gsub(".*cohort", "", term))] %>% 
-  .[, t := parse_number(gsub("co*", "", term))] %>% 
+  .[, cohort := parse_number(gsub(".*-", "", term))] %>% 
+  .[, t := parse_number(gsub("-.*", "", term))] %>% 
   .[, .(cohort, t, estimate)] %>% 
   setnames("estimate", "twfe")
 
@@ -667,4 +667,146 @@ ggplot(all_estimates) +
   geom_point(aes(y = true_coef, x = twm)) +
   geom_abline(slope = 1, color = "red") +
   facet_grid(type ~ .)
+
+
+#/*=================================================*/
+#' # 6.5 Aggregating and Imposing Restrictions on the Treatment Effects
+#/*=================================================*/
+
+#/*----------------------------------*/
+#' ## time-constant, vary by cohort (6.42)
+#/*----------------------------------*/
+ 
+feols(
+  y
+  ~ i(cohort, treated, ref = 13)
+  | id + t, 
+  data = reg_data_6.1
+) %>% 
+tidy() %>% 
+data.table()
+
+#/*----------------------------------*/
+#' ## time-variant, common across cohort
+#/*----------------------------------*/
+
+feols(
+  y
+  ~ i(t, treated)
+  | id + t, 
+  data = reg_data_6.1
+) %>% 
+tidy() %>% 
+data.table()
+
+#/*----------------------------------*/
+#' ## vary by treatment intensity (how many periods), common across cohort 
+#/*----------------------------------*/
+
+feols(
+  y
+  ~ i(t-cohort, treated)
+  | id + t, 
+  data = reg_data_6.1
+) %>% 
+tidy() %>% 
+data.table()
+
+#/*=================================================*/
+#' # 6.8 
+#/*=================================================*/
+
+N <- 3000
+T <- 3
+
+cohort_data <- 
+  data.table(
+    #=== year first treated ===#
+    #' 4: never treated
+    cohort = c(2, 3, 4), 
+    #=== first id number for each of the cohort ===#
+    id = c(1, 1000, 2000)
+  )
+
+reg_data_6.8 <- 
+  CJ(id = 1:N, t = 1:T) %>% 
+  #=== individual FE ===#
+  .[, ind_fe := rnorm(1), by = id] %>% 
+  #=== year FE ===#
+  .[, time_fe := rnorm(1), by = t] %>% 
+  #=== when first treated (cohort) ===#
+  #' 3 groups: 
+  #' cohort = 2: id 1 through 999 (treated since t = 9)
+  #' cohort = 3: id 1000 through 1999 (treated since t = 9)
+  #' cohort = 4: id 2000 through 3000 (never treated)
+  cohort_data[., roll = TRUE, on = "id"] %>% 
+  #=== cohort dummies ===#
+  .[, `:=`(
+    d2 = as.numeric(cohort == 2),
+    d3 = as.numeric(cohort == 3)
+  )] %>% 
+  #=== time dummies ===#
+  .[, `:=`(
+    f2 = as.numeric(t == 2),
+    f3 = as.numeric(t == 3)
+  )] %>% 
+  #=== cohort fe ===#
+  .[, cohort_fe := rnorm(1), by = cohort] %>% 
+  #=== treated ===#
+  .[, treated := fifelse(t >= cohort, 1, 0)] %>% 
+  #=== error ===#
+  .[, mu := rnorm(1), by = .(id, t)] %>% 
+  #=== dependent variable ===#
+  .[, y 
+    := 1 # eta
+    + 1 * d2 * f2 # treatment effect on cohort == 2 at t = 2
+    + 2 * d2 * f3 # treatment effect on cohort == 2 at t = 3
+    + 1 * d3 * f3 # treatment effect on cohort == 3 at t = 3
+    + cohort_fe 
+    + time_fe 
+    + ind_fe 
+    + mu 
+  ]
+
+#/*----------------------------------*/
+#' ## 6.48 staggered adoption time-cohort treatment effect
+#/*----------------------------------*/
+etwfe <- 
+  feols(
+    y 
+    ~ d2 + d3 + f2 + f3 
+    + d2 * f2 + d2 * f3 + d3 * f3,
+    data = reg_data_6.8
+  )
+
+etwfe_d2f2 <- 
+  tidy(etwfe) %>% 
+  data.table() %>% 
+  .[term == "d2:f2", estimate]
+
+#/*----------------------------------*/
+#' ## 6.49 two-period DID
+#/*----------------------------------*/
+#' The observations at the last period dropped.
+#' Both cohort = 3 and cohort = 4 are used 
+#' as the control group
+did <- 
+  feols(
+    y 
+    ~ d2 + f2 + d2 * f2,
+    data = reg_data_6.8[t <= 2, ]
+  )
+
+did_d2f2 <- 
+  tidy(did) %>% 
+  data.table() %>% 
+  .[term == "d2:f2", estimate]
+
+#' etwfe_d2f2 and did_d2f2 are identical:
+#' \Rightarrow etwfe uses the not-yet-treated group as
+#' the control 
+
+#/*=================================================*/
+#' # Chapter 7
+#/*=================================================*/
 
