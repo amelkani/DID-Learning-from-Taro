@@ -355,7 +355,6 @@ twm_estimates <- tidy(twm) %>%
   .[grep(":d", term), .(term, estimate)]
 )
 
-
 #/*----------------------------------*/
 #' ## TWM for testing the treatment effects are the same across time
 #/*----------------------------------*/
@@ -849,7 +848,7 @@ did_d2f2 <-
 #/*=================================================*/
 #' # Chapter 7: Unconditional CT
 #/*=================================================*/
-N <- 1000
+N <- 5000
 T <- 10
 
 reg_data_7.1 <- 
@@ -931,9 +930,6 @@ linearHypothesis(ct_test_pols, paste0("t::", 2:5, ":d = 0"))
 #' x_it: x varies over i and t
 #'
 
-N <- 1000
-T <- 10
-
 #/*----------------------------------*/
 #' ## Data generation
 #/*----------------------------------*/
@@ -1009,5 +1005,96 @@ ct_test_pols <-
   ) 
 
 #=== test CT ===#
+linearHypothesis(ct_test_pols, paste0("t::", 2:5, ":d = 0"))
+
+#/*=================================================*/
+#' # Chapter 7: Conditional CT
+#/*=================================================*/
+#' x_it: x varies over i and t.
+#' z_i: z varies over i, but not t. 
+#' Treatment effects vary by z_i
+#' The impact of z_i vary by time: this and systematic
+#' difference in z_i between the treated and control
+#' groups create distinct trends between them
+
+#/*----------------------------------*/
+#' ## Data generation
+#/*----------------------------------*/
+reg_data_7.1_cct_2 <-
+  copy(reg_data_7.1_cct) %>%  
+  .[, z_i := runif(1), by = id] %>% 
+  .[, z_i := z_i + d, by = id] %>% 
+  .[, coef_z := 3 * runif(1), by = t] %>% 
+  #=== dependent var (CT holds) ===#
+  .[, y := 
+    1 
+    + 2 * treated  
+    + 2 * treated * z_i + coef_z * z_i
+    + 4 * x
+    + ind_fe + time_fe 
+    + mu 
+    ]
+
+#/*----------------------------------*/
+#' ## Check unconditional CT
+#/*----------------------------------*/
+#' widely different unconditional trend due to
+#' both x and z 
+
+mean_data <- 
+  reg_data_7.1_cct_2[, .(y = mean(y)), by = .(d, t)] 
+
+ggplot(mean_data) +
+  geom_line(aes(y = y, x = t, color = factor(d)))
+
+#/*----------------------------------*/
+#' ## Check TWFE and TWM is fine after controlling for x
+#/*----------------------------------*/
+#=== twfe ===#
+feols(
+  y
+  ~ x + treated + I(treated * z_i) + i(t, z_i)
+  | id + t,
+  data = reg_data_7.1_cct_2
+) %>% 
+tidy() %>% 
+data.table() %>% 
+.[grepl("treated", term), ]
+
+#=== twm (identical with twfe) ===#
+#' d is for treated_.i 
+#' p is for treated_t. and I(treated * z_i)_t..
+#' i(d, z_i) is for I(treated * z_i)
+#' i(t) is for i(t, z_i)_t.
+
+feols(
+  y
+  ~ x + treated + I(treated * z_i) + i(t, z_i) 
+  + x_i. + x_.t + d + i(t) + i(d, z_i),
+  data = reg_data_7.1_cct_2
+) %>% 
+tidy() %>% 
+data.table() %>% 
+.[grepl("treated", term), ]
+
+#/*----------------------------------*/
+#' ## Conditional CT checks
+#/*----------------------------------*/
+#' include x, x_i. (no need to include x_.t as we have time dummies)
+ct_test_pols <- 
+  feols(
+    y  
+    ~ d + i(t, ref = 1) + x + x_i. + i(t, d, ref = 1) 
+    + i(t, z_i) + i(d, z_i) + i(paste0(t, d), z_i),
+    data = reg_data_7.1_cct_2
+  ) 
+
+#=== take a look at the results ===#
+tidy(ct_test_pols) %>% 
+data.table() %>% 
+.[grepl("t::", term), ] %>% 
+.[grepl("d", term), ]  
+
+#=== test conditional CT ===#
 linearHypothesis(ct_test_pols, paste0("t::", 2:5, ":d = 0"))
 
