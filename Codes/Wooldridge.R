@@ -39,19 +39,24 @@ library(fixest)
 
 
 #/*=================================================*/
-#' # Equivalence of TWFE and TWM (General)
+#' # Theorem 3.1: Equivalence of TWFE and TWM (General)
 #/*=================================================*/
 #/*----------------------------------*/
 #' ## Data generation
 #/*----------------------------------*/
+set.seed(483942)
+
 cov_ls <- c("x_1", "x_2", "x_3")
 
+N <- 1000
+T <- 10
+
 reg_data <- 
-  CJ(id = 1:100, year = 1990:2020) %>% 
+  CJ(id = 1:N, t = 1:T) %>% 
   #=== individual FE ===#
   .[, ind_fe := rnorm(1), by = id] %>% 
   #=== year FE ===#
-  .[, year_fe := rnorm(1), by = year] %>% 
+  .[, time_fe := rnorm(1), by = t] %>% 
   #=== covariates (independent) ===#
   .[, 
     `:=`(
@@ -59,24 +64,28 @@ reg_data <-
       x_2 = rnorm(1),
       x_3 = rnorm(1)
     ), 
-    by = .(id, year)
+    by = .(id, t)
   ] %>% 
-  #=== unit average over the years  ===#
+  #=== unit average over time  ===#
   .[, 
     c("x_1_i_dot", "x_2_i_dot", "x_3_i_dot") := lapply(.SD, mean), 
     by = id, 
     .SDcols = cov_ls
   ] %>% 
-  #=== cross-sectional average by year  ===#
+  #=== cross-sectional average by t ===#
   .[, 
     c("x_1_dot_y", "x_2_dot_y", "x_3_dot_y") := lapply(.SD, mean), 
-    by = year, 
+    by = t, 
     .SDcols = cov_ls
   ] %>%
   #=== error ===#
-  .[, mu := rnorm(1), by = .(id, year)] %>% 
+  .[, mu := rnorm(1), by = .(id, t)] %>% 
+  #=== time-invariant variable ===#
+  .[, z_i := rnorm(1), by = id] %>% 
+  #=== cross-section-invariant variable ===#
+  .[, m_t := rnorm(1), by = t] %>% 
   #=== dependent var ===#
-  .[, y := 1 + x_1 + 2 * x_2  + 3 * x_3 + mu] 
+  .[, y := 1 + x_1 + 2 * x_2 + 3 * x_3 + ind_fe + time_fe + mu + z_i + m_t] 
 
 #/*----------------------------------*/
 #' ## two-way Mundlak (TWM)
@@ -85,27 +94,44 @@ twm <-
   feols(
     y 
     ~ x_1 + x_2 + x_3  
-    + x_1_i_dot + x_2_i_dot + x_3_i_dot 
-    + x_1_dot_y + x_2_dot_y + x_3_dot_y, 
+    + x_1_i_dot + x_2_i_dot + x_3_i_dot # x_i.
+    + x_1_dot_y + x_2_dot_y + x_3_dot_y, # x_.t
     data = reg_data
   )
 
-(
-twm_estimates <- tidy(twm) %>% 
-  data.table() %>% 
-  .[term %in% cov_ls, .(term, estimate)]
-)
+tidy(twm) %>% 
+data.table() %>% 
+.[term %in% cov_ls, .(term, estimate)]
+
+#/*----------------------------------*/
+#' ## Theorem 3.2
+#/*----------------------------------*/
+#' addition of any time-invariant variables (z_i) and
+#' cross-section-invariant (m_t) do not affect twm
+#' estimates once x_i. and x_.t are included
+
+twm_e <- 
+  feols(
+    y 
+    ~ x_1 + x_2 + x_3  
+    + z_i + m_t # unnecessary variables
+    + x_1_i_dot + x_2_i_dot + x_3_i_dot # x_i.
+    + x_1_dot_y + x_2_dot_y + x_3_dot_y, # x_.t
+    data = reg_data
+  )
+
+tidy(twm_e) %>% 
+data.table() %>% 
+.[term %in% cov_ls, .(term, estimate)]
 
 #/*----------------------------------*/
 #' ## TWFE
 #/*----------------------------------*/
-twfe <- feols(y ~ x_1 + x_2 + x_3 | id + year, data = reg_data)
+twfe <- feols(y ~ x_1 + x_2 + x_3 | id + t, data = reg_data)
 
-(
-twfe_estimates <- tidy(twfe) %>% 
-  data.table() %>% 
-  .[term %in% cov_ls, .(term, estimate)]
-)
+tidy(twfe) %>% 
+data.table() %>% 
+.[term %in% cov_ls, .(term, estimate)]
 
 #/*=================================================*/
 #' # Section 5.1 (Homogeneous Time Effects): Corollary 5.1
@@ -116,7 +142,7 @@ set.seed(389435)
 #' ## Data generation
 #/*----------------------------------*/
 N <- 1000
-T <- 30
+T <- 10
 
 reg_data_5.1 <- 
   CJ(id = 1:N, t = 1:T) %>% 
@@ -124,7 +150,7 @@ reg_data_5.1 <-
   .[, ind_fe := rnorm(1), by = id] %>% 
   #=== year FE ===#
   .[, time_fe := rnorm(1), by = t] %>% 
-  #=== eventually treadted (d_i) ===#
+  #=== eventually treated (d_i) ===#
   .[, d := fifelse(id > N/2, 1, 0)] %>% 
   #=== post-treatment or not ===#
   .[, p := fifelse(t > T/2, 1, 0)] %>% 
@@ -144,33 +170,27 @@ reg_data_5.1 <-
 #/*----------------------------------*/
 dd <- feols(y ~ treated + d + p, data = reg_data_5.1)
 
-(
-dd_estimates <- tidy(dd) %>% 
-  data.table() %>% 
-  .[term == "treated", .(term, estimate)]
-)
+tidy(dd) %>% 
+data.table() %>% 
+.[term == "treated", .(term, estimate)]
 
 #/*----------------------------------*/
 #' ## TWFE
 #/*----------------------------------*/
 twfe <- feols(y ~ treated | id + t, data = reg_data_5.1)
 
-(
-twfe_estimates <- tidy(twfe) %>% 
-  data.table() %>% 
-  .[term == "treated", .(term, estimate)]
-)
+tidy(twfe) %>% 
+data.table() %>% 
+.[term == "treated", .(term, estimate)]
 
 #/*----------------------------------*/
 #' ## TWM
 #/*----------------------------------*/
 twm <- feols(y ~ treated + treated_i_dot + treated_dot_t, data = reg_data_5.1)
 
-(
-twm_estimates <- tidy(twm) %>% 
-  data.table() %>% 
-  .[term == "treated", .(term, estimate)]
-)
+tidy(twm) %>% 
+data.table() %>% 
+.[term == "treated", .(term, estimate)]
 
 #' We know from the previous section, TWFE and TWM produce the
 #' same coefficient on `treated` (this hold algebraically). 
@@ -224,11 +244,9 @@ twfe <-
     data = reg_data_5.1_5.6
   )
 
-(
-twfe_estimates <- tidy(twfe) %>% 
-  data.table() %>% 
-  .[grep("treated", term), .(term, estimate)]
-)
+tidy(twfe) %>% 
+data.table() %>% 
+.[grep("treated", term), .(term, estimate)]
 
 #/*----------------------------------*/
 #' ## TWM (5.7)
@@ -244,11 +262,9 @@ twm <-
     data = reg_data_5.1_5.6
   )
 
-(
-twm_estimates <- tidy(twm) %>% 
-  data.table() %>% 
-  .[grep("treated", term), .(term, estimate)]
-)
+tidy(twm) %>% 
+data.table() %>% 
+.[grep("treated", term), .(term, estimate)]
 
 #/*----------------------------------*/
 #' ## DID (5.9)
@@ -263,18 +279,16 @@ dd_data <- reg_data_5.1_5.6[, .(id, d, x_i1, x_i2)][y_dif_data, on = "id"]
 
 dd <- feols(y_dif ~ d + x_i1 + x_i2 + I(d * x_i1) + I(d * x_i2), data = dd_data)
 
-(
-dd_estimates <- tidy(dd) %>% 
-  data.table() %>% 
-  .[grep("d", term), .(term, estimate)]
-)
+tidy(dd) %>% 
+data.table() %>% 
+.[grep("d", term), .(term, estimate)]
 
 #/*=================================================*/
 #' # Section: 5.2 (Heterogeneous Time Effects)
 #/*=================================================*/
 
 reg_data_5.2 <- 
-  copy(reg_data) %>% 
+  copy(reg_data_5.1) %>% 
   #=== beta_q (treatment effect by t) ===#
   .[, beta_q := runif(1), by = t] %>% 
   .[, y := 1 + beta_q * treated + mu]
@@ -283,17 +297,25 @@ reg_data_5.2 <-
 #' ## TWFE
 #/*----------------------------------*/
 #' i(factor, var) creates interactions of the 
-#' two variables. ref = 1:15 drops t = 1, ..., t = 15.
-#' You can use i(factor(t), treated) and get the same results.
+#' two variables. ref = 1:5 drops t = 1, ..., t = 5.
+#' You can use i(t, treated) and get the same results.
 
-twfe <- feols(y ~ i(factor(t), d, ref = 1:15) | id + t, data = reg_data_5.2)
+twfe <- 
+  feols(
+    y 
+    ~ i(t, d, ref = 1:5) 
+    | id + t, 
+    data = reg_data_5.2
+  )
 
 (
 twfe_estimates <- tidy(twfe) %>% 
   data.table() %>% 
   .[grep("d", term), .(term, estimate)] %>% 
   #=== get t for future plotting ===#
-  .[, t := readr::parse_number(term)]
+  .[, t := readr::parse_number(term)] %>% 
+  #=== this is just for displaying the results ===#
+  .[]
 )
 
 #/*~~~~~~~~~~~~~~~~~~~~~~*/
@@ -301,7 +323,7 @@ twfe_estimates <- tidy(twfe) %>%
 #/*~~~~~~~~~~~~~~~~~~~~~~*/
 beta_data <- 
   #=== true beta ===#
-  reg_data_5.2[t >= 16, .(t, beta_q)] %>% 
+  reg_data_5.2[t >= 6, .(t, beta_q)] %>% 
   unique(by = "t") %>% 
   twfe_estimates[., on = "t"]
 
@@ -311,12 +333,21 @@ ggplot(beta_data) +
   geom_abline(slope = 1, col = "red") +
   geom_text(aes(x = beta_q, y = estimate + 0.02, label = paste0("t = ", t))) +
   ylab("Estimated Treatment Effect") +
-  xlab("True Treatment Effect") 
+  xlab("True Treatment Effect") +
+  ylim(0, NA) +
+  xlim(0, NA)
 
 #/*----------------------------------*/
 #' ## TWM
 #/*----------------------------------*/
-twm <- feols(y ~ i(factor(t), d, ref = 1:15) + d + i(t, ref = 1:15), data = reg_data_5.2)
+twm <- 
+  feols(
+    y 
+    ~ i(t, d, ref = 1:5) 
+    + d 
+    + i(t, ref = 1:5), # including i(t) would give the same results
+    data = reg_data_5.2
+  )
 
 (
 twm_estimates <- tidy(twm) %>% 
@@ -324,31 +355,38 @@ twm_estimates <- tidy(twm) %>%
   .[grep(":d", term), .(term, estimate)]
 )
 
+
 #/*----------------------------------*/
-#' ## TWM for easy testing 
+#' ## TWM for testing the treatment effects are the same across time
 #/*----------------------------------*/
 #' `treated` itself is included.
 #' The coefficients on treated * t is relative to
-#' (treated * t == 16)
+#' (treated * t == 6)
 
 reg_data_5.2_test <- 
-  copy(reg_data) %>% 
+  copy(reg_data_5.1) %>% 
   #=== beta_q (treatment effect by t) ===#
   #' the impact made constant unlike the one above
   .[, beta_q := 1, by = t] %>% 
   .[, y := 1 + beta_q * treated + mu]
 
-twm_test <- feols(y ~ treated + i(factor(t), treated, ref = 1:16) + d + i(t, ref = 1:15), data = reg_data_5.2_test)
+twm_test <- 
+  feols(
+    y 
+    ~ treated 
+    + i(t, treated, ref = 1:6) 
+    + d 
+    + i(t, ref = 1:6), 
+    data = reg_data_5.2_test
+  )
 
-(
-twm_estimates_test <- tidy(twm_test) %>% 
-  data.table() %>% 
-  .[grep("d", term), .(term, estimate)]
-)
+tidy(twm_test) %>% 
+data.table() %>% 
+.[grep("treated", term), .(term, estimate)]
 
 #=== testing ===#
 library(car)
-linearHypothesis(twm_test, paste0("factor(t)::", 17:30, ":treated = 0"))
+linearHypothesis(twm_test, paste0("t::", 7:10, ":treated = 0"))
 
 #/*----------------------------------*/
 #' ## DID-like (5.14)
@@ -700,8 +738,10 @@ tidy() %>%
 data.table()
 
 #/*----------------------------------*/
-#' ## vary by treatment intensity (how many periods), common across cohort 
+#' ## vary by treatment intensity, common across cohort 
 #/*----------------------------------*/
+#' treatment intensity: how many periods under treatment
+#' 
 
 feols(
   y
@@ -807,6 +847,167 @@ did_d2f2 <-
 #' the control 
 
 #/*=================================================*/
-#' # Chapter 7
+#' # Chapter 7: Unconditional CT
 #/*=================================================*/
+N <- 1000
+T <- 10
+
+reg_data_7.1 <- 
+  CJ(id = 1:N, t = 1:T) %>% 
+  #=== individual FE ===#
+  .[, ind_fe := rnorm(1), by = id] %>% 
+  #=== year FE ===#
+  .[, time_fe := rnorm(1), by = t] %>% 
+  #=== eventually treated (d_i) ===#
+  .[, d := fifelse(id > N / 2, 1, 0)] %>% 
+  #=== post-treatment or not ===#
+  .[, p := fifelse(t > T / 2, 1, 0)] %>% 
+  #=== treatment indicator ===#
+  .[, treated := d * p] %>% 
+  #=== error ===#
+  .[, mu := rnorm(1), by = .(id, t)] %>% 
+  #=== dependent var (CT holds) ===#
+  .[, y_ct_h := 1 + treated + mu + ind_fe + time_fe] %>% 
+  #=== group-specific time-fe ===#
+  .[, g_t_fe := rnorm(1), by = .(d, t)] %>% 
+  #=== dependent var (CT doe not hold because of g_t_fe) ===#
+  .[, y_ct_nh := 1 + treated + mu + ind_fe + time_fe + g_t_fe]  
+
+#/*----------------------------------*/
+#' ## Viz
+#/*----------------------------------*/
+mean_data <- 
+  reg_data_7.1[, .(y_ct_h = mean(y_ct_h), y_ct_nh = mean(y_ct_nh)), by = .(d, t)] 
+
+#=== CT holds ===#
+ggplot(mean_data) +
+  geom_line(aes(y = y_ct_h, x = t, color = factor(d)))
+
+#=== CT does not hold ===#
+ggplot(mean_data) +
+  geom_line(aes(y = y_ct_nh, x = t, color = factor(d)))
+
+#/*----------------------------------*/
+#' ## CT holds
+#/*----------------------------------*/
+#=== 7.2 ===#
+ct_test_pols <- 
+  feols(
+    y_ct_h
+    ~ d
+    + i(t, ref = 1)
+    + i(t, d, ref = 1),
+    data = reg_data_7.1
+  ) 
+
+#=== take a look at the results ===#
+tidy(ct_test_pols)
+
+#=== test CT ===#
+linearHypothesis(ct_test_pols, paste0("t::", 2:5, ":d = 0"))
+
+#/*----------------------------------*/
+#' ## CT does not hold
+#/*----------------------------------*/
+#=== 7.2 ===#
+ct_test_pols <- 
+  feols(
+    y_ct_nh
+    ~ d
+    + i(t, ref = 1)
+    + i(t, d, ref = 1),
+    data = reg_data_7.1
+  ) 
+
+#=== take a look at the results ===#
+tidy(ct_test_pols)
+
+#=== test CT ===#
+linearHypothesis(ct_test_pols, paste0("t::", 2:5, ":d = 0"))
+
+#/*=================================================*/
+#' # Chapter 7: Conditional CT
+#/*=================================================*/
+#' x_it: x varies over i and t
+#'
+
+N <- 1000
+T <- 10
+
+#/*----------------------------------*/
+#' ## Data generation
+#/*----------------------------------*/
+reg_data_7.1_cct <-
+  copy(reg_data_7.1) %>%  
+  .[, x := runif(1), by = .(id, t)] %>% 
+  #=== systematic different in x between eventually-treated and control ===#
+  .[, x_dt := runif(1), by = .(d, t)] %>% 
+  #=== x is made correlated with individual fe ===#
+  #' You need to be careful with testing 
+  .[, x := x + x_dt + ind_fe] %>% 
+  #=== individual mean of x ===#
+  .[, x_i. := mean(x), by = id] %>% 
+  #=== cross-sectional mean of x  ===#
+  .[, x_.t := mean(x), by = t] %>% 
+  #=== dependent var (CT holds) ===#
+  .[, y_ct_h := 1 + treated + mu + ind_fe + time_fe + 4 * x]
+
+#/*----------------------------------*/
+#' ## Check unconditional CT
+#/*----------------------------------*/
+mean_data <- 
+  reg_data_7.1_cct[, .(y_ct_h = mean(y_ct_h)), by = .(d, t)] 
+
+ggplot(mean_data) +
+  geom_line(aes(y = y_ct_h, x = t, color = factor(d)))
+
+#/*----------------------------------*/
+#' ## Check TWFE and TWM is fine after controlling for x
+#/*----------------------------------*/
+#=== twfe ===#
+feols(
+  y_ct_h
+  ~ x + treated
+  | id + t,
+  data = reg_data_7.1_cct
+)
+
+#=== twm (identical with twfe) ===#
+feols(
+  y_ct_h
+  ~ x + treated + x_i. + x_.t + d + p,
+  data = reg_data_7.1_cct
+)
+
+#/*----------------------------------*/
+#' ## Conditional CT checks
+#/*----------------------------------*/
+#/*~~~~~~~~~~~~~~~~~~~~~~*/
+#' ### correct
+#/*~~~~~~~~~~~~~~~~~~~~~~*/
+#' include x, x_i. (no need to include x_.t as we have time dummies)
+ct_test_pols <- 
+  feols(
+    y_ct_h ~ d + i(t, ref = 1) + x + x_i. + i(t, d, ref = 1),
+    data = reg_data_7.1_cct
+  ) 
+
+#=== take a look at the results ===#
+# tidy(ct_test_pols) %>% data.table()
+
+#=== test CT ===#
+linearHypothesis(ct_test_pols, paste0("t::", 2:5, ":d = 0"))
+
+#/*----------------------------------*/
+#' ## Incorrect
+#/*----------------------------------*/
+#' do not include x_i 
+ct_test_pols <- 
+  feols(
+    y_ct_nh ~ d + x + i(t, ref = 1) + i(t, d, ref = 1),
+    data = reg_data_7.1_cct
+  ) 
+
+#=== test CT ===#
+linearHypothesis(ct_test_pols, paste0("t::", 2:5, ":d = 0"))
 
